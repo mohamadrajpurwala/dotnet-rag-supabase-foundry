@@ -23,7 +23,7 @@ namespace DocumentApp.Web
                     AutoRefreshToken = false,
                     AutoConnectRealtime = false
                 });
-                //client.InitializeAsync().GetAwaiter().GetResult();
+                client.InitializeAsync().GetAwaiter().GetResult();
                 return client;
             });
 
