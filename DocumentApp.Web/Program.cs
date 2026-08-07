@@ -5,8 +5,6 @@ using DocumentApp.Web.DocChunker;
 using DocumentApp.Web.Services;
 using Microsoft.Extensions.AI;
 using Npgsql;
-using OpenAI;
-using System.Net;
 
 namespace DocumentApp.Web
 {
@@ -41,22 +39,6 @@ namespace DocumentApp.Web
                 .AddInteractiveServerComponents();
 
             builder.Services.AddDocumentChunking();
-
-            //builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp =>
-            //{
-            //    var client = new OpenAIClient(
-            //        builder.Configuration["OpenAI:ApiKey"]
-            //    );
-
-            //    return client
-            //        .GetEmbeddingClient(
-            //            builder.Configuration["OpenAI:EmbeddingModel"]
-            //        )
-            //        .AsIEmbeddingGenerator()
-            //        .AsBuilder()
-            //        .UseLogging()
-            //        .Build(sp);
-            //});
 
             builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp =>
             {
