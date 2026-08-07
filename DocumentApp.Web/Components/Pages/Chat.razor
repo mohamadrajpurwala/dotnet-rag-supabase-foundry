@@ -1,0 +1,118 @@
+﻿@page "/chat"
+@inject ChatService RagChat
+
+<hr class="my-4" />
+<h4>Ask the documents</h4>
+<p class="text-muted small">
+    Retrieval finds the passages; the model reads them and writes the answer.
+    Every claim is numbered back to the source it came from.
+</p>
+
+<div class="input-group mb-3">
+    <input class="form-control" placeholder="e.g. what is the notice period for resignation?"
+           @bind="question" @bind:event="oninput" @onkeyup="OnKeyUp" disabled="@isAnswering" />
+    <button class="btn btn-primary" @onclick="AskAsync"
+            disabled="@(isAnswering || string.IsNullOrWhiteSpace(question))">
+        @(isAnswering ? "Thinking..." : "Ask")
+    </button>
+</div>
+
+@* ---- the answer, streaming in ---- *@
+@if (!string.IsNullOrEmpty(answer) || isAnswering)
+{
+    <div class="card mb-3 border-primary">
+        <div class="card-body">
+            <h6 class="text-primary mb-2">Answer</h6>
+            @* white-space:pre-wrap keeps the model's line breaks and lists intact *@
+            <div style="white-space: pre-wrap;">@answer</div>
+            @if (isAnswering)
+            {
+                <span class="spinner-grow spinner-grow-sm text-primary ms-1"></span>
+            }
+        </div>
+    </div>
+}
+
+@* ---- sources, rendered BEFORE the answer arrives ---- *@
+@if (sources is not null && sources.Count > 0)
+{
+    <h6 class="text-muted">Sources</h6>
+    @for (var i = 0; i < sources.Count; i++)
+    {
+        var index = i + 1;
+        var hit = sources[i];
+        <div class="card mb-2">
+            <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-start small">
+                    <span>
+                        <span class="badge bg-primary me-2">@index</span>
+                        <strong>@hit.FileName</strong>
+                        @if (!string.IsNullOrEmpty(hit.HeadingPath))
+                        {
+                            <span class="text-muted"> — @hit.HeadingPath</span>
+                        }
+                    </span>
+                    <span class="badge bg-secondary">@hit.Similarity.ToString("P0")</span>
+                </div>
+                <p class="mb-0 mt-2 small text-muted">@Truncate(hit.Content, 300)</p>
+            </div>
+        </div>
+    }
+}
+else if (searched && !isAnswering)
+{
+    <div class="alert alert-warning">
+        Nothing in the uploaded documents was close enough to this question.
+    </div>
+}
+
+@code {
+    private string question = "";
+    private string answer = "";
+    private List<SearchHit>? sources;
+    private bool isAnswering;
+    private bool searched;
+
+    private async Task OnKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await AskAsync();
+    }
+
+    private async Task AskAsync()
+    {
+        if (string.IsNullOrWhiteSpace(question)) return;
+
+        isAnswering = true;
+        answer = "";
+        sources = null;
+        searched = true;
+
+        try
+        {
+            // Phase 1 — retrieve and paint the sources straight away.
+            // This is the whole trick behind the page feeling fast: the user has
+            // something to read while the model is still generating.
+            sources = await RagChat.RetrieveAsync(question);
+            StateHasChanged();
+
+            if (sources.Count == 0) return;
+
+            // Phase 2 — stream the answer in on top.
+            await foreach (var token in RagChat.StreamAnswerAsync(question, sources))
+            {
+                answer += token;
+                StateHasChanged();   // already on the render thread inside an event handler
+            }
+        }
+        catch (Exception ex)
+        {
+            answer = $"Something went wrong: {ex.Message}";
+        }
+        finally
+        {
+            isAnswering = false;
+        }
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+}

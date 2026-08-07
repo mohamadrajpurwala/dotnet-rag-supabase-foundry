@@ -1,0 +1,272 @@
+﻿@page "/upload"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Forms
+@inject IngestionService Ingestion
+@inject IJSRuntime JS
+
+<PageTitle>Document Ingestion</PageTitle>
+
+<h1 class="mb-1">Document Ingestion</h1>
+<p class="text-muted">
+    Upload a Word document → stored in Supabase Storage → split into chunks →
+    embedded as vectors → searchable by meaning, not keywords.
+</p>
+
+<!-- ============================================================ UPLOAD ==== -->
+<div class="card mb-4">
+    <div class="card-body">
+        <label class="form-label fw-semibold">Select .docx files</label>
+        <InputFile OnChange="OnFilesSelected" multiple accept=".docx" class="form-control" disabled="@isBusy" />
+        <div class="form-text">Max 25&nbsp;MB per file. Legacy .doc is a different format and won't parse.</div>
+
+        @if (queue.Count > 0)
+        {
+            <ul class="list-group list-group-flush mt-3">
+                @foreach (var item in queue)
+                {
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <span>
+                            @if (item.State == JobState.Running)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                            }
+                            else if (item.State == JobState.Done)
+                            {
+                                <span class="text-success me-2">&check;</span>
+                            }
+                            else if (item.State == JobState.Failed)
+                            {
+                                <span class="text-danger me-2">&times;</span>
+                            }
+                            <strong>@item.FileName</strong>
+                        </span>
+                        <span class="@(item.State == JobState.Failed ? "text-danger" : "text-muted") small">
+                            @item.Message
+                        </span>
+                    </li>
+                }
+            </ul>
+        }
+    </div>
+</div>
+
+<!-- ========================================================= DOCUMENTS ==== -->
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h4 class="mb-0">Uploaded documents</h4>
+    <button class="btn btn-sm btn-outline-secondary" @onclick="LoadDocumentsAsync" disabled="@isBusy">Refresh</button>
+</div>
+
+@if (documents is null)
+{
+    <p class="text-muted"><em>Loading...</em></p>
+}
+else if (documents.Count == 0)
+{
+    <div class="alert alert-light border">Nothing uploaded yet.</div>
+}
+else
+{
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr>
+                <th>File</th>
+                <th>Size</th>
+                <th>Chunks</th>
+                <th>Status</th>
+                <th>Uploaded</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var doc in documents)
+            {
+                <tr>
+                    <td>@doc.FileName</td>
+                    <td>@FormatSize(doc.SizeBytes)</td>
+                    <td>@(doc.ChunkCount > 0 ? doc.ChunkCount.ToString() : "—")</td>
+                    <td>
+                        <span class="badge @StatusClass(doc.Status)">@doc.Status</span>
+                        @if (doc.ErrorMessage is not null)
+                        {
+                            <div class="small text-danger">@doc.ErrorMessage</div>
+                        }
+                    </td>
+                    <td class="small text-muted">@doc.UploadedAt.ToLocalTime().ToString("dd MMM HH:mm")</td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-link" @onclick="() => DownloadAsync(doc.Id)">Download</button>
+                        <button class="btn btn-sm btn-link text-danger" @onclick="() => DeleteAsync(doc.Id)">Delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<!-- ============================================================ SEARCH ==== -->
+<hr class="my-4" />
+<h4>Ask the documents</h4>
+<p class="text-muted small">This is the payoff — it matches on meaning, so "how much time off do I get" finds a paragraph titled "Annual Leave Entitlement".</p>
+
+<div class="input-group mb-3">
+    <input class="form-control" placeholder="e.g. what is the notice period?"
+           @bind="searchQuery" @bind:event="oninput" @onkeyup="OnSearchKeyUp" />
+    <button class="btn btn-primary" @onclick="SearchAsync" disabled="@(isSearching || string.IsNullOrWhiteSpace(searchQuery))">
+        @(isSearching ? "Searching..." : "Search")
+    </button>
+</div>
+
+@if (hits is not null)
+{
+    @if (hits.Count == 0)
+    {
+        <div class="alert alert-warning">No matches.</div>
+    }
+    else
+    {
+        @foreach (var hit in hits)
+        {
+            <div class="card mb-2">
+                <div class="card-body py-2">
+                    <div class="d-flex justify-content-between small text-muted">
+                        <span>@hit.FileName @(string.IsNullOrEmpty(hit.HeadingPath) ? "" : $" — {hit.HeadingPath}")</span>
+                        <span class="badge bg-secondary">@hit.Similarity.ToString("P0")</span>
+                    </div>
+                    <p class="mb-0 mt-1">@Truncate(hit.Content, 400)</p>
+                </div>
+            </div>
+        }
+    }
+}
+
+@code {
+    // ---- upload state
+    private readonly List<Job> queue = new();
+    private bool isBusy;
+
+    // ---- documents list
+    private List<DocumentRow>? documents;
+
+    // ---- search
+    private string searchQuery = "";
+    private List<SearchHit>? hits;
+    private bool isSearching;
+
+    private const long MaxFileSize = 25 * 1024 * 1024;
+
+    protected override async Task OnInitializedAsync() => await LoadDocumentsAsync();
+
+    private async Task LoadDocumentsAsync()
+    {
+        documents = await Ingestion.GetDocumentsAsync();
+    }
+
+    private async Task OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        isBusy = true;
+        queue.Clear();
+
+        foreach (var file in e.GetMultipleFiles(maximumFileCount: 10))
+        {
+            var job = new Job { FileName = file.Name, State = JobState.Running, Message = "Queued" };
+            queue.Add(job);
+            StateHasChanged();
+
+            if (!file.Name.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
+            {
+                job.State = JobState.Failed;
+                job.Message = "Only .docx is supported";
+                continue;
+            }
+
+            // IProgress marshals back onto the render thread for us, but the
+            // callback still has to ask Blazor to re-render.
+            var progress = new Progress<string>(msg =>
+            {
+                job.Message = msg;
+                InvokeAsync(StateHasChanged);
+            });
+
+            try
+            {
+                // OpenReadStream defaults to 512 KB in Blazor Server — you MUST
+                // pass a bigger limit or real documents throw immediately.
+                await using var stream = file.OpenReadStream(MaxFileSize);
+                var result = await Ingestion.IngestAsync(stream, file.Name, progress);
+
+                job.State = result.Succeeded ? JobState.Done : JobState.Failed;
+                job.Message = result.Succeeded
+                    ? $"{result.ChunkCount} chunks in {result.Elapsed.TotalSeconds:F1}s"
+                    : result.Error!;
+            }
+            catch (Exception ex)
+            {
+                job.State = JobState.Failed;
+                job.Message = ex.Message;
+            }
+
+            await LoadDocumentsAsync();
+            StateHasChanged();
+        }
+
+        isBusy = false;
+    }
+
+    private async Task DeleteAsync(Guid id)
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", "Delete this document and all its chunks?")) return;
+        await Ingestion.DeleteAsync(id);
+        await LoadDocumentsAsync();
+    }
+
+    private async Task DownloadAsync(Guid id)
+    {
+        var url = await Ingestion.GetDownloadUrlAsync(id);
+        await JS.InvokeVoidAsync("open", url, "_blank");
+    }
+
+    private async Task OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(searchQuery)) return;
+        isSearching = true;
+        try
+        {
+            hits = await Ingestion.SearchAsync(searchQuery);
+        }
+        finally
+        {
+            isSearching = false;
+        }
+    }
+
+    // ---- small view helpers
+    private enum JobState { Running, Done, Failed }
+
+    private class Job
+    {
+        public string FileName { get; set; } = "";
+        public JobState State { get; set; }
+        public string Message { get; set; } = "";
+    }
+
+    private static string StatusClass(string status) => status switch
+    {
+        "ready" => "bg-success",
+        "failed" => "bg-danger",
+        _ => "bg-warning text-dark"
+    };
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+    private static string FormatSize(long bytes) => bytes switch
+    {
+        1024 => $"{bytes} B",
+        1024 * 1024 => $"{bytes / 1024.0:F0} KB",
+        _ => $"{bytes / (1024.0 * 1024):F1} MB"
+    };
+}
+

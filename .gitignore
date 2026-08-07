@@ -1,0 +1,12 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+/.vs/
+/.vs/DocumentApp
+/DocumentApp.Web/bin/
+/DocumentApp.Web/bin
+/DocumentApp.Web/obj/
+/DocumentApp.Web/obj
+/DocumentApp.Web/appsettings.Development.json
