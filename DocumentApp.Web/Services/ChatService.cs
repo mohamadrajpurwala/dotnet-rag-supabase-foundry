@@ -91,6 +91,8 @@ public class ChatService(
             if (used + hit.Content.Length > MaxContextChars) break;
 
             sb.AppendLine($"[{i + 1}] File: {hit.FileName}");
+            if (hit.PageNumber is int page)
+                sb.AppendLine($"    Page: {page}");
             if (!string.IsNullOrEmpty(hit.HeadingPath))
                 sb.AppendLine($"    Section: {hit.HeadingPath}");
             sb.AppendLine();

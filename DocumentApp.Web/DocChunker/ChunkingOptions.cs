@@ -29,6 +29,19 @@ public sealed class ChunkingOptions
     /// <summary>Prefix list paragraphs with "- " so bullets survive into the chunk text.</summary>
     public bool PreserveListMarkers { get; set; } = true;
 
+    /// <summary>
+    /// Group words into blocks and detect reading order before extracting.
+    /// Required for multi-column PDFs, otherwise columns interleave line by line.
+    /// Costs noticeably more CPU.
+    /// </summary>
+    public bool PdfLayoutAware { get; set; } = true;
+
+    /// <summary>Guess headings from font size. Heuristic — see PdfChunker.</summary>
+    public bool PdfInferHeadings { get; set; } = true;
+
+    /// <summary>For password-protected PDFs.</summary>
+    public string? PdfPassword { get; set; }
+
     public void Validate()
     {
         if (MaxChars < 100)

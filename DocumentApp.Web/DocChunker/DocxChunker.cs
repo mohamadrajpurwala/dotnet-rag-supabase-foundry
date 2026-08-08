@@ -1,18 +1,10 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using DocumentApp.Web.DocChunker;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 
 namespace DocumentApp.Web.DocChunker;
 
-/// <summary>
-/// Structure-aware .docx chunker.
-///
-/// Walks the document body in reading order, tracks the heading hierarchy so every
-/// chunk knows which section it came from, keeps tables intact, and packs blocks
-/// into size-bounded chunks with a configurable character overlap.
-/// </summary>
 public sealed partial class DocxChunker : IDocumentChunker
 {
     private static readonly string[] Extensions = [".docx"];
@@ -33,7 +25,6 @@ public sealed partial class DocxChunker : IDocumentChunker
         options ??= new ChunkingOptions();
         options.Validate();
 
-        // OpenXml needs a seekable stream; buffer non-seekable sources (HTTP, network shares).
         Stream working = stream;
         MemoryStream? buffer = null;
         if (!stream.CanSeek)
@@ -54,8 +45,6 @@ public sealed partial class DocxChunker : IDocumentChunker
             if (buffer is not null) await buffer.DisposeAsync().ConfigureAwait(false);
         }
     }
-
-    // ---------------------------------------------------------------- reading
 
     private enum BlockKind { Paragraph, Heading, Table }
 
@@ -124,7 +113,6 @@ public sealed partial class DocxChunker : IDocumentChunker
         return map;
     }
 
-    /// <summary>Returns 1-9 for headings, 0 for body text.</summary>
     private static int GetHeadingLevel(Paragraph paragraph, IReadOnlyDictionary<string, string> styleNames)
     {
         var styleId = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value;
@@ -136,7 +124,6 @@ public sealed partial class DocxChunker : IDocumentChunker
             var match = HeadingStyleRegex().Match(styleId);
             if (match.Success) return int.Parse(match.Groups[1].Value);
 
-            // Custom style ids ("Style12") still carry a readable name in styles.xml.
             if (styleNames.TryGetValue(styleId, out var name))
             {
                 if (name.Equals("Title", StringComparison.OrdinalIgnoreCase)) return 1;
@@ -145,7 +132,6 @@ public sealed partial class DocxChunker : IDocumentChunker
             }
         }
 
-        // Last resort: templates that set outline level directly instead of using a heading style.
         var outline = paragraph.ParagraphProperties?.OutlineLevel?.Val?.Value;
         if (outline is >= 0 and <= 8) return outline.Value + 1;
 
@@ -161,7 +147,6 @@ public sealed partial class DocxChunker : IDocumentChunker
 
         foreach (var run in paragraph.Descendants<Run>())
         {
-            // Skip text removed under tracked changes.
             if (run.Ancestors<DeletedRun>().Any()) continue;
 
             foreach (var child in run.ChildElements)
@@ -213,13 +198,11 @@ public sealed partial class DocxChunker : IDocumentChunker
         return sb.ToString().TrimEnd();
     }
 
-    // -------------------------------------------------------------- assembling
-
     private static List<DocumentChunk> Assemble(
         List<Block> blocks, string fileName, ChunkingOptions options, CancellationToken ct)
     {
         var chunks = new List<DocumentChunk>();
-        var headings = new string[10];          // headings[level] = latest text at that level
+        var headings = new string[10];
         var buffer = new StringBuilder();
         var bufferPath = string.Empty;
         var bufferLevel = 0;
@@ -264,10 +247,9 @@ public sealed partial class DocxChunker : IDocumentChunker
                                   && block.HeadingLevel <= options.SplitHeadingLevel
                                   && buffer.Length >= options.MinChars;
 
-                if (forcedBreak) Flush(carryOverlap: false);   // new section: no bleed-over
+                if (forcedBreak) Flush(carryOverlap: false);
             }
 
-            // A heading opening a fresh chunk should own that chunk's path.
             if (buffer.Length == 0 || IsOnlyOverlap(buffer, options))
             {
                 bufferPath = BuildPath(headings);
@@ -306,7 +288,6 @@ public sealed partial class DocxChunker : IDocumentChunker
         return 0;
     }
 
-    /// <summary>Breaks a block that alone exceeds MaxChars, preferring sentence then word boundaries.</summary>
     private static IEnumerable<string> SplitOversized(string text, int maxChars)
     {
         if (text.Length <= maxChars) { yield return text; }
@@ -340,7 +321,6 @@ public sealed partial class DocxChunker : IDocumentChunker
         if (sb.Length > 0) yield return sb.ToString().Trim();
     }
 
-    /// <summary>Trailing slice of a chunk, snapped forward to a clean boundary.</summary>
     private static string TakeTail(string text, int overlapChars)
     {
         var take = Math.Min(overlapChars, text.Length / 2);

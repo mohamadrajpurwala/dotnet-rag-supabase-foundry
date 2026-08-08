@@ -10,7 +10,7 @@ namespace DocumentApp.Web.Services
         private readonly Supabase.Client _supabase;
         private readonly NpgsqlDataSource _db;
         private readonly IEmbeddingGenerator<string, Embedding<float>> _embedder;
-        private readonly IDocumentChunker _chunker;
+        private readonly IDocumentChunkerResolver _resolver;
         private readonly ILogger<IngestionService> _logger;
 
         private const string Bucket = "documents";
@@ -19,13 +19,13 @@ namespace DocumentApp.Web.Services
             Supabase.Client supabase,
             NpgsqlDataSource db,
             IEmbeddingGenerator<string, Embedding<float>> embedder,
-            IDocumentChunker chunker,
+            IDocumentChunkerResolver resolver,
             ILogger<IngestionService> logger)
         {
             _supabase = supabase;
             _db = db;
             _embedder = embedder;
-            _chunker = chunker;
+            _resolver = resolver;
             _logger = logger;
         }
 
@@ -63,12 +63,17 @@ namespace DocumentApp.Web.Services
                     .From(Bucket)
                     .Upload(bytes, storagePath, new Supabase.Storage.FileOptions
                     {
-                        ContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        ContentType = Path.GetExtension(fileName).ToLowerInvariant() switch
+                        {
+                            ".pdf" => "application/pdf",
+                            _ => "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        },
                         Upsert = false
                     });
 
                 // 3. Chunk.
                 progress?.Report("Chunking document...");
+                var _chunker = _resolver.Resolve(fileName);
                 var chunks = await _chunker.ChunkAsync(buffer, fileName, new ChunkingOptions
                 {
                     MaxChars = 1800,
@@ -81,8 +86,6 @@ namespace DocumentApp.Web.Services
                 if (chunks.Count == 0)
                     throw new InvalidOperationException("No text extracted — is the document empty or image-only?");
 
-                // 4. Embed. One batched call, not one call per chunk: an 80-chunk
-                //    document goes from ~80 round trips to 1.
                 progress?.Report($"Embedding {chunks.Count} chunks...");
                 var texts = chunks.Select(c => c.ToEmbeddingText()).ToList();
                 var embeddings = await _embedder.GenerateAsync(texts, cancellationToken: ct);
@@ -107,8 +110,6 @@ namespace DocumentApp.Web.Services
             }
         }
 
-        // ------------------------------------------------------------- persistence
-
         private async Task<Guid> InsertDocumentAsync(string fileName, string path, long size, CancellationToken ct)
         {
             const string sql = """
@@ -132,7 +133,7 @@ namespace DocumentApp.Web.Services
         {
             await using var conn = await _db.OpenConnectionAsync(ct);
             await using var writer = await conn.BeginBinaryImportAsync(
-                "copy document_chunks (document_id, chunk_index, content, heading_path, embedding) from stdin (format binary)",
+                "copy document_chunks (document_id, chunk_index, content, heading_path, page_number, embedding) from stdin (format binary)",
                 ct);
 
             for (var i = 0; i < chunks.Count; i++)
@@ -142,6 +143,10 @@ namespace DocumentApp.Web.Services
                 await writer.WriteAsync(chunks[i].Index, NpgsqlTypes.NpgsqlDbType.Integer, ct);
                 await writer.WriteAsync(chunks[i].Content, NpgsqlTypes.NpgsqlDbType.Text, ct);
                 await writer.WriteAsync(chunks[i].HeadingPath, NpgsqlTypes.NpgsqlDbType.Text, ct);
+                if (chunks[i].PageNumber is int page)
+                    await writer.WriteAsync(page, NpgsqlTypes.NpgsqlDbType.Integer, ct);
+                else
+                    await writer.WriteNullAsync(ct);
                 await writer.WriteAsync(new Vector(embeddings[i].Vector), ct);
             }
 
@@ -165,8 +170,6 @@ namespace DocumentApp.Web.Services
             cmd.Parameters.AddWithValue("id", id);
             await cmd.ExecuteNonQueryAsync(CancellationToken.None);
         }
-
-        // -------------------------------------------------------------- read side
 
         public async Task<List<DocumentRow>> GetDocumentsAsync(CancellationToken ct = default)
         {
@@ -228,10 +231,7 @@ namespace DocumentApp.Web.Services
             return await _supabase.Storage.From(Bucket).CreateSignedUrl(path, 300); // 5 minutes
         }
 
-        // ----------------------------------------------------------------- search
-        // Not strictly "upload", but this is what proves ingestion worked.
-        // Put it on the same page — it's the moment the demo lands.
-
+        /// ----------------------------------------------------------------- search
         public async Task<List<SearchHit>> SearchAsync(string query, int limit = 5, CancellationToken ct = default)
         {
             var queryEmbedding = await _embedder.GenerateVectorAsync(query, cancellationToken: ct);
@@ -239,7 +239,7 @@ namespace DocumentApp.Web.Services
             // <=> is pgvector's cosine DISTANCE (0 = identical), so similarity = 1 - distance.
             const string sql = """
             select c.content, c.heading_path, d.file_name,
-                   1 - (c.embedding <=> @q) as similarity
+                   1 - (c.embedding <=> @q) as similarity, c.page_number
             from document_chunks c
             join documents d on d.id = c.document_id
             where d.status = 'ready'
@@ -259,7 +259,8 @@ namespace DocumentApp.Web.Services
                     reader.GetString(0),
                     reader.IsDBNull(1) ? "" : reader.GetString(1),
                     reader.GetString(2),
-                    reader.GetDouble(3)));
+                    reader.GetDouble(3),
+                    reader.IsDBNull(4) ? null : reader.GetInt32(4)));
             }
             return hits;
         }
@@ -274,6 +275,5 @@ namespace DocumentApp.Web.Services
         Guid Id, string FileName, long SizeBytes, int ChunkCount,
         string Status, string? ErrorMessage, DateTime UploadedAt);
 
-    public record SearchHit(string Content, string HeadingPath, string FileName, double Similarity);
-
+    public record SearchHit(string Content, string HeadingPath, string FileName, double Similarity, int? PageNumber);
 }

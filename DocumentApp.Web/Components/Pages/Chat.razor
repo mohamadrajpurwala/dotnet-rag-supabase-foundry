@@ -47,6 +47,10 @@
                     <span>
                         <span class="badge bg-primary me-2">@index</span>
                         <strong>@hit.FileName</strong>
+                        @if (hit.PageNumber is int page)
+                        {
+                            <span class="badge bg-light text-dark ms-1">p.@(page)</span>
+                        }
                         @if (!string.IsNullOrEmpty(hit.HeadingPath))
                         {
                             <span class="text-muted"> — @hit.HeadingPath</span>

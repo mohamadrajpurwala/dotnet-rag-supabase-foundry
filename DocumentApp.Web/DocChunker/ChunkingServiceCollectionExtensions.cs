@@ -29,7 +29,9 @@ public static class ChunkingServiceCollectionExtensions
     public static IServiceCollection AddDocumentChunking(this IServiceCollection services)
     {
         services.AddSingleton<IDocumentChunker, DocxChunker>();
+        services.AddSingleton<IDocumentChunker, PdfChunker>();
         services.AddSingleton<IDocumentChunkerResolver, DocumentChunkerResolver>();
+
         return services;
     }
 }

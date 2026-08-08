@@ -8,15 +8,15 @@
 
 <h1 class="mb-1">Document Ingestion</h1>
 <p class="text-muted">
-    Upload a Word document → stored in Supabase Storage → split into chunks →
+    Upload a Word document or PDF → stored in Supabase Storage → split into chunks →
     embedded as vectors → searchable by meaning, not keywords.
 </p>
 
 <!-- ============================================================ UPLOAD ==== -->
 <div class="card mb-4">
     <div class="card-body">
-        <label class="form-label fw-semibold">Select .docx files</label>
-        <InputFile OnChange="OnFilesSelected" multiple accept=".docx" class="form-control" disabled="@isBusy" />
+        <label class="form-label fw-semibold">Select .docx or .pdf files</label>
+        <InputFile OnChange="OnFilesSelected" multiple accept=".docx,.pdf" class="form-control" disabled="@isBusy" />
         <div class="form-text">Max 25&nbsp;MB per file. Legacy .doc is a different format and won't parse.</div>
 
         @if (queue.Count > 0)
@@ -171,15 +171,14 @@ else
             queue.Add(job);
             StateHasChanged();
 
-            if (!file.Name.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
+            if (!file.Name.EndsWith(".docx", StringComparison.OrdinalIgnoreCase) &&
+                !file.Name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
             {
                 job.State = JobState.Failed;
-                job.Message = "Only .docx is supported";
+                job.Message = "Only .docx and .pdf are supported";
                 continue;
             }
 
-            // IProgress marshals back onto the render thread for us, but the
-            // callback still has to ask Blazor to re-render.
             var progress = new Progress<string>(msg =>
             {
                 job.Message = msg;
@@ -188,8 +187,6 @@ else
 
             try
             {
-                // OpenReadStream defaults to 512 KB in Blazor Server — you MUST
-                // pass a bigger limit or real documents throw immediately.
                 await using var stream = file.OpenReadStream(MaxFileSize);
                 var result = await Ingestion.IngestAsync(stream, file.Name, progress);
 

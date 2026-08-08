@@ -36,4 +36,6 @@ public sealed record DocumentChunk
     /// </summary>
     public string ToEmbeddingText() =>
         string.IsNullOrEmpty(HeadingPath) ? Content : $"{HeadingPath}\n\n{Content}";
+
+    public int? PageNumber { get; init; }
 }
